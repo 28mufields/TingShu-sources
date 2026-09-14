@@ -1,0 +1,55 @@
+name: Fetch YuetingBa Player Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fetch-yuetingba-bundle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch current player bundle
+        shell: bash
+        run: |
+          set -u
+          mkdir -p bundle reports
+          URL="http://www.yuetingba.cn/tingpage/assets/index-toMiT3_P.js"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
+          curl -4 --http1.1 -L --compressed \
+            --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 \
+            -A "$UA" \
+            -w "HTTP=%{http_code} FINAL=%{url_effective} BYTES=%{size_download}\n" \
+            -D reports/headers.txt \
+            -o bundle/index.js "$URL" \
+            > reports/fetch.txt 2>&1 || echo "curl_exit=$?" >> reports/fetch.txt
+
+          {
+            cat reports/fetch.txt
+            echo "FILE_BYTES=$(wc -c < bundle/index.js 2>/dev/null || echo 0)"
+            echo
+            for kw in "assl" "ting-with-efi" "creationTime" "CryptoJS" "AES" "decrypt" "efi" "window.parent" "parent." "ts" "es"; do
+              echo "### $kw"
+              grep -aon -m 50 -- "$kw" bundle/index.js 2>/dev/null || true
+            done
+          } > reports/summary.txt
+
+          cat reports/summary.txt
+
+      - name: Upload bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuetingba-player-bundle
+          path: |
+            bundle/
+            reports/
+          retention-days: 14
