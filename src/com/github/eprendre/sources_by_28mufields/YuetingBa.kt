@@ -20,6 +20,7 @@ import kotlin.math.ceil
 
 object YuetingBa : TingShu() {
     private const val BASE_URL = "http://www.yuetingba.cn"
+    private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
     private const val STATIC_KEY_B64 = "le95G3hnFDJsBE+1/v9eYw=="
     private const val STATIC_IV_B64 = "IvswQFEUdKYf+d1wKpYLTg=="
     private const val AUDIO_SK = "xMiP5W1DHBxC5PwQ5oj5QfRn0tsT5UBk"
@@ -40,7 +41,10 @@ object YuetingBa : TingShu() {
     override fun search(keywords: String, page: Int): Pair<List<Book>, Int> {
         val encoded = URLEncoder.encode(keywords, "UTF-8")
         val url = "$BASE_URL/search?type=1&name=$encoded&pageIndex=$page"
-        val doc = Jsoup.connect(url).config(true).get()
+        val doc = Jsoup.connect(url).config(true)
+            .userAgent(UA)
+            .referrer(BASE_URL + "/")
+            .get()
         val books = parseBookList(doc)
         val totalPage = parseTotalPages(doc.text(), page)
         return Pair(books, totalPage)
@@ -121,7 +125,11 @@ object YuetingBa : TingShu() {
     }
 
     override fun getCategoryList(url: String): Category {
-        val doc = Jsoup.connect(url).config(true).ignoreContentType(true).get()
+        val doc = Jsoup.connect(url).config(true)
+            .userAgent(UA)
+            .referrer(BASE_URL + "/")
+            .ignoreContentType(true)
+            .get()
         val books = parseBookList(doc)
 
         val currentPage = doc.selectFirst(".pagelist .current")?.text()?.toIntOrNull()
@@ -152,7 +160,11 @@ object YuetingBa : TingShu() {
     ): BookDetail {
         if (!loadEpisodes) return BookDetail(emptyList())
 
-        val firstDoc = Jsoup.connect(bookUrl).config(true).ignoreContentType(true).get()
+        val firstDoc = Jsoup.connect(bookUrl).config(true)
+            .userAgent(UA)
+            .referrer(BASE_URL + "/")
+            .ignoreContentType(true)
+            .get()
         val assl = Regex("""var\\s+assl\\s*=\\s*['"]([^'"]+)['"]""")
             .find(firstDoc.toString())
             ?.groupValues
@@ -189,7 +201,11 @@ object YuetingBa : TingShu() {
                 notifyLoadingEpisodes((pageIndex + 1).toString() + " / " + totalPages)
 
                 val pageUrl = bookUrl.replace(Regex("/\\d+/?$"), "/" + offset)
-                val pageDoc = Jsoup.connect(pageUrl).config(true).ignoreContentType(true).get()
+                val pageDoc = Jsoup.connect(pageUrl).config(true)
+            .userAgent(UA)
+            .referrer(BASE_URL + "/")
+            .ignoreContentType(true)
+            .get()
                 parseEpisodes(pageDoc, server.url, server.name, py, bookId, episodes)
             }
             notifyLoadingEpisodes(null)
@@ -206,18 +222,18 @@ object YuetingBa : TingShu() {
         )
 
         elements.forEach { item ->
-            val titleEl = item.selectFirst(
-                ".box-list-item-text-title a, .box-list-item-text-title, a"
-            ) ?: return@forEach
-
-            val linkEl = if (titleEl.tagName() == "a") titleEl else item.selectFirst("a")
+            val linkEl = item.select("a[href*=/book/detail/]").firstOrNull()
                 ?: return@forEach
-
+            val titleEl = item.selectFirst(".box-list-item-text-title") ?: linkEl
             val title = titleEl.text().trim()
             if (title.isEmpty()) return@forEach
 
-            val bookUrl = linkEl.absUrl("href")
-            if (bookUrl.isEmpty()) return@forEach
+            val rawHref = linkEl.attr("href")
+            val bookUrl = when {
+                rawHref.startsWith("http://") || rawHref.startsWith("https://") -> rawHref
+                rawHref.startsWith("/") -> BASE_URL + rawHref
+                else -> BASE_URL + "/" + rawHref
+            }
 
             val imgEl = item.selectFirst("img")
             val cover = imgEl?.let {
@@ -229,7 +245,7 @@ object YuetingBa : TingShu() {
                 }
             }.orEmpty()
 
-            val spans = item.select(".box-list-item-text-autspeaker span")
+            val spans = item.select(".box-list-item-text-autspeaker > span, .box-list-item-text-autspeaker span")
             val author = spans.firstOrNull()?.text()?.trim().orEmpty()
             val artist = spans.lastOrNull()?.text()?.trim().orEmpty()
             val intro = item.selectFirst(
