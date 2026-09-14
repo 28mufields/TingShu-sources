@@ -1,0 +1,139 @@
+name: Capture ITingShu Playback Network
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/capture-itingshu-playback.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare Playwright
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium
+
+      - name: Capture playback network
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          cat > capture.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({headless:true});
+            const contexts = [
+              {
+                name:'mobile',
+                ua:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                viewport:{width:390,height:844},
+                url:'https://m.itingshu.net/play/9808_1_100347.html'
+              },
+              {
+                name:'desktop',
+                ua:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport:{width:1365,height:900},
+                url:'https://www.itingshu.net/play/9808_1_100347.html'
+              }
+            ];
+
+            let out = [];
+            for (const cfg of contexts) {
+              const context = await browser.newContext({
+                userAgent:cfg.ua,
+                viewport:cfg.viewport,
+                locale:'zh-CN'
+              });
+              const page = await context.newPage();
+
+              page.on('request', req => {
+                const u=req.url();
+                if (/mapi|play|\.mp3|\.m4a|ysxs|api\//i.test(u)) {
+                  out.push({
+                    phase:'request', mode:cfg.name, method:req.method(), url:u,
+                    postData:req.postData(),
+                    headers:Object.fromEntries(
+                      Object.entries(req.headers()).filter(([k]) =>
+                        ['x-requested-with','referer','origin','content-type','cookie','sc','sp'].includes(k.toLowerCase())
+                      )
+                    )
+                  });
+                }
+              });
+
+              page.on('response', async res => {
+                const u=res.url();
+                if (/mapi|play|\.mp3|\.m4a|ysxs|api\//i.test(u)) {
+                  let body='';
+                  const ct=(res.headers()['content-type']||'').toLowerCase();
+                  if (ct.includes('json') || ct.includes('text')) {
+                    try { body=(await res.text()).slice(0,4000); } catch {}
+                  }
+                  out.push({
+                    phase:'response', mode:cfg.name, status:res.status(), url:u,
+                    contentType:ct, body
+                  });
+                }
+              });
+
+              try {
+                const resp = await page.goto(cfg.url,{waitUntil:'domcontentloaded',timeout:45000});
+                out.push({phase:'page',mode:cfg.name,status:resp?.status(),url:page.url(),title:await page.title()});
+                await page.waitForTimeout(5000);
+
+                // Try common play controls without assuming exact markup.
+                const candidates = [
+                  'audio','video','button',
+                  '[class*=play]','[id*=play]','.aplayer-play','.play-btn'
+                ];
+                for (const sel of candidates) {
+                  const loc=page.locator(sel).first();
+                  try {
+                    if (await loc.count() && await loc.isVisible()) {
+                      await loc.click({timeout:2000}).catch(()=>{});
+                      await page.waitForTimeout(3000);
+                    }
+                  } catch {}
+                }
+
+                out.push({
+                  phase:'cookies',
+                  mode:cfg.name,
+                  cookies:(await context.cookies()).map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires}))
+                });
+                out.push({phase:'html',mode:cfg.name,html:(await page.content()).slice(0,12000)});
+              } catch (e) {
+                out.push({phase:'error',mode:cfg.name,error:String(e)});
+              }
+
+              await context.close();
+            }
+
+            fs.writeFileSync('reports/itingshu-network.json', JSON.stringify(out,null,2));
+            const summary = out.filter(x =>
+              x.phase !== 'html' && x.phase !== 'cookies'
+            );
+            fs.writeFileSync('reports/summary.txt', summary.map(x=>JSON.stringify(x)).join('\n'));
+            await browser.close();
+          })();
+          JS
+
+          node capture.js
+          cat reports/summary.txt
+
+      - name: Upload capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: itingshu-playback-network
+          path: reports/
+          retention-days: 14
