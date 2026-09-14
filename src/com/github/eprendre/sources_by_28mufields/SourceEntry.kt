@@ -11,6 +11,7 @@ object SourceEntry {
 
     @JvmStatic
     fun getSources(): List<TingShu> = listOf(
-        ITingShu
+        ITingShu,
+        YuetingBa
     )
 }
