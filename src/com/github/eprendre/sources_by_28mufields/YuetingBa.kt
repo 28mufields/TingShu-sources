@@ -11,14 +11,14 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.util.Base64
+import android.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.math.ceil
 
 object YuetingBa : TingShu() {
-    private const val BASE_URL = "https://www.yuetingba.cn"
+    private const val BASE_URL = "http://www.yuetingba.cn"
     private const val STATIC_KEY_B64 = "le95G3hnFDJsBE+1/v9eYw=="
     private const val STATIC_IV_B64 = "IvswQFEUdKYf+d1wKpYLTg=="
 
@@ -268,8 +268,8 @@ object YuetingBa : TingShu() {
         keyBase64: String,
         ivBase64: String
     ): String {
-        val key = Base64.getDecoder().decode(keyBase64)
-        val iv = Base64.getDecoder().decode(ivBase64)
+        val key = Base64.decode(keyBase64, Base64.DEFAULT)
+        val iv = Base64.decode(ivBase64, Base64.DEFAULT)
         return decryptAesCbc(encryptedBase64, key, iv)
     }
 
@@ -296,7 +296,7 @@ object YuetingBa : TingShu() {
             SecretKeySpec(key, "AES"),
             IvParameterSpec(iv)
         )
-        val encrypted = Base64.getDecoder().decode(encryptedBase64)
+        val encrypted = Base64.decode(encryptedBase64, Base64.DEFAULT)
         return String(cipher.doFinal(encrypted), StandardCharsets.UTF_8)
     }
 
