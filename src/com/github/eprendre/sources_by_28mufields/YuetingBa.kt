@@ -11,6 +11,7 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import android.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -21,6 +22,7 @@ object YuetingBa : TingShu() {
     private const val BASE_URL = "http://www.yuetingba.cn"
     private const val STATIC_KEY_B64 = "le95G3hnFDJsBE+1/v9eYw=="
     private const val STATIC_IV_B64 = "IvswQFEUdKYf+d1wKpYLTg=="
+    private const val AUDIO_SK = "xMiP5W1DHBxC5PwQ5oj5QfRn0tsT5UBk"
 
     override fun getSourceId(): String = "987f426064bd4063907c67a8fc1064ec"
 
@@ -46,13 +48,16 @@ object YuetingBa : TingShu() {
 
     override fun getAudioUrlExtractor(): AudioUrlExtractor {
         AudioUrlCustomExtractor.setUp { episodeValue ->
-            val parts = episodeValue.split(",", limit = 2)
-            require(parts.size == 2) { "悦听吧章节参数格式错误" }
+            val parts = episodeValue.split("|", limit = 5)
+            require(parts.size == 5) { "悦听吧章节参数格式错误" }
 
-            val serverBase = parts[0]
-            val chapterId = parts[1]
+            val serverUrl = parts[0]
+            val serverName = parts[1]
+            val py = parts[2]
+            val bookId = parts[3]
+            val chapterId = parts[4]
+
             val apiUrl = "$BASE_URL/api/app/docs-listen/$chapterId/ting-with-efi"
-
             val doc = Jsoup.connect(apiUrl)
                 .config(true)
                 .ignoreContentType(true)
@@ -73,9 +78,24 @@ object YuetingBa : TingShu() {
 
             val key = buildDynamicKey(id, timeDigits)
             val iv = buildDynamicIv(id, timeDigits)
-            val path = decryptBase64WithPlainKey(encrypted, key, iv)
+            val decryptedPath = decryptBase64WithPlainKey(encrypted, key, iv)
 
-            serverBase.trimEnd('/') + "/" + path.trimStart('/')
+            val fileName = decryptedPath
+                .substringBefore("?")
+                .substringAfterLast("/")
+
+            val mediaPath = when {
+                serverName.endsWith("_p") ->
+                    "/" + py + "_" + bookId + "/" + fileName
+                serverName.endsWith("_b") ->
+                    "/myfiles/host/listen/booksdir/" + py + "_" + bookId + "/" + fileName
+                else -> decryptedPath
+            }
+
+            val expire = System.currentTimeMillis() / 1000L + 600L
+            val token = md5(fileName + "|" + expire + "|" + AUDIO_SK)
+            serverUrl.trimEnd('/') + "/" + mediaPath.trimStart('/') +
+                "?token=" + token + "&expire=" + expire
         }
         return AudioUrlCustomExtractor
     }
@@ -139,9 +159,21 @@ object YuetingBa : TingShu() {
             ?.getOrNull(1)
             ?: throw IllegalStateException("悦听吧详情页未找到 assl")
 
-        val serverBase = decryptServerUrl(assl)
+        val server = decryptAndSelectServer(assl, bookUrl)
+        val py = Regex("""var\s+py\s*=\s*['"]([^'"]+)['"]""")
+            .find(firstDoc.toString())
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: ""
+
+        val bookId = Regex("""/book/detail/([^/]+)/""")
+            .find(bookUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: throw IllegalStateException("悦听吧书籍地址缺少 bookId")
+
         val episodes = ArrayList<Episode>()
-        parseEpisodes(firstDoc, serverBase, episodes)
+        parseEpisodes(firstDoc, server.url, server.name, py, bookId, episodes)
 
         if (loadFullPages) {
             val total = Regex("""共\\s*(\\d+)\\s*集""")
@@ -158,7 +190,7 @@ object YuetingBa : TingShu() {
 
                 val pageUrl = bookUrl.replace(Regex("/\\d+/?$"), "/" + offset)
                 val pageDoc = Jsoup.connect(pageUrl).config(true).ignoreContentType(true).get()
-                parseEpisodes(pageDoc, serverBase, episodes)
+                parseEpisodes(pageDoc, server.url, server.name, py, bookId, episodes)
             }
             notifyLoadingEpisodes(null)
         }
@@ -215,7 +247,10 @@ object YuetingBa : TingShu() {
 
     private fun parseEpisodes(
         doc: org.jsoup.nodes.Document,
-        serverBase: String,
+        serverUrl: String,
+        serverName: String,
+        py: String,
+        bookId: String,
         out: MutableList<Episode>
     ) {
         val elements = doc.select(
@@ -231,8 +266,9 @@ object YuetingBa : TingShu() {
                 ?.takeIf { it.isNotEmpty() }
                 ?: element.text().trim()
 
-            if (title.isNotEmpty() && out.none { it.url == "$serverBase,$id" }) {
-                out.add(Episode(title, "$serverBase,$id"))
+            val episodeValue = serverUrl + "|" + serverName + "|" + py + "|" + bookId + "|" + id
+            if (title.isNotEmpty() && out.none { it.url == episodeValue }) {
+                out.add(Episode(title, episodeValue))
             }
         }
     }
@@ -251,16 +287,56 @@ object YuetingBa : TingShu() {
         }
     }
 
-    private fun decryptServerUrl(assl: String): String {
-        val plain = decryptBase64WithEncodedKey(assl, STATIC_KEY_B64, STATIC_IV_B64)
+    private data class AudioServer(
+        val name: String,
+        val url: String
+    )
+
+    private fun decryptAndSelectServer(assl: String, bookUrl: String): AudioServer {
+        // Current player (v=1.8.5) removes AUDIO_SK from assl before AES decrypting it.
+        val cleaned = assl.replace(AUDIO_SK, "")
+        val plain = decryptBase64WithEncodedKey(cleaned, STATIC_KEY_B64, STATIC_IV_B64)
         val array = JSONArray(plain)
-        require(array.length() >= 2) { "悦听吧 assl 数据格式异常" }
 
-        val server = array.getJSONObject(1)
-        val host = server.getString("Value")
-        val port = server.get("Port").toString()
+        val bookId = Regex("""/book/detail/([^/]+)/""")
+            .find(bookUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: ""
+        val bookSuffix = bookId.substringAfterLast("-")
 
-        return "http://$host:$port"
+        val ipv4 = ArrayList<JSONObject>()
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            if (item.optString("AsType") == "1" && item.optString("Type") == "A") {
+                ipv4.add(item)
+            }
+        }
+        require(ipv4.isNotEmpty()) { "悦听吧没有可用 IPv4 音频服务器" }
+
+        val matched = ipv4.filter {
+            val ids = it.optString("BookIds")
+            ids.isNotEmpty() && ids.split(",").contains(bookSuffix)
+        }
+
+        val candidates = if (matched.isNotEmpty()) {
+            matched
+        } else {
+            ipv4.filter { it.isNull("BookIds") || it.optString("BookIds").isEmpty() }
+                .ifEmpty { ipv4 }
+        }
+
+        // Browser code uses weighted random selection. Deterministic highest-ratio selection
+        // is more stable for an external source and uses the same eligible candidate set.
+        val selected = candidates.maxByOrNull { it.optInt("Ratio", 0) } ?: candidates.first()
+        val scheme = selected.optString("Scheme", "http")
+        val host = selected.getString("Value")
+        val port = selected.get("Port").toString()
+
+        return AudioServer(
+            name = selected.optString("Name"),
+            url = scheme + "://" + host + ":" + port
+        )
     }
 
     private fun decryptBase64WithEncodedKey(
@@ -320,4 +396,10 @@ object YuetingBa : TingShu() {
         }
         return n.toString()
     }
+    private fun md5(value: String): String {
+        val bytes = MessageDigest.getInstance("MD5")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
 }
