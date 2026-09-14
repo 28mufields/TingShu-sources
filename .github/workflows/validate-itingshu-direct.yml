@@ -70,9 +70,9 @@ jobs:
                   print("PAGE2",r.status,"bytes",len(html))
 
           def meta(name):
-              m=re.search(r'<meta[^>]+name=["\']'+re.escape(name)+r'["\'][^>]+content=["\']([^"\']+)["\']',html,re.I)
+              m=re.search(r'<meta[^>]+name=["\']'+re.escape(name)+r'["\'][^>]*content=["\']([^"\']+)["\']',html,re.I)
               if not m:
-                  m=re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']'+re.escape(name)+r'["\']',html,re.I)
+                  m=re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*name=["\']'+re.escape(name)+r'["\']',html,re.I)
               return m.group(1) if m else ""
 
           nid,cid,sc,sortv=(meta("_b"),meta("_p"),meta("_c"),meta("_d"))
