@@ -34,13 +34,31 @@ jobs:
           cookie=""
           if "<title>Loading...</title>" in html:
               import base64
-              m=re.search(r"reversed\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']",html)
-              assert m
-              reversed_value=m.group(1)
+              pos=html.find("reversed")
+              assert pos >= 0
+              eq=html.find("=",pos)
+              assert eq >= 0
+              qd=html.find('"',eq)
+              qs=html.find("'",eq)
+              candidates=[x for x in (qd,qs) if x >= 0]
+              q1=min(candidates)
+              quote=html[q1]
+              q2=html.find(quote,q1+1)
+              assert q2 > q1
+              reversed_value=html[q1+1:q2]
               challenge=base64.b64decode(reversed_value[::-1]).decode("utf-8",errors="replace")
-              tm=re.search(r"var\\s+token\\s*=\\s*'([^']+)'",challenge)
-              assert tm
-              token=tm.group(1)
+
+              pos=challenge.find("token")
+              assert pos >= 0
+              eq=challenge.find("=",pos)
+              qd=challenge.find('"',eq)
+              qs=challenge.find("'",eq)
+              candidates=[x for x in (qd,qs) if x >= 0]
+              q1=min(candidates)
+              quote=challenge[q1]
+              q2=challenge.find(quote,q1+1)
+              assert q2 > q1
+              token=challenge[q1+1:q2]
               cookie="__51guid__="+urllib.parse.quote(token,safe="")+"; __51refresh__guid=1"
               req=urllib.request.Request(PAGE,headers={
                   "User-Agent":UA,
