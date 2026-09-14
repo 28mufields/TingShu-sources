@@ -143,7 +143,7 @@ object YuetingBa : TingShu() {
             val spans = pageContainer.select("span")
             val countText = spans.firstOrNull { it.text().contains("共") && it.text().contains("条") }?.text()
                 ?: spans.getOrNull(1)?.text().orEmpty()
-            val total = Regex("""共\\s*(\\d+)\\s*条""")
+            val total = Regex("""共\s*(\d+)\s*条""")
                 .find(countText)
                 ?.groupValues
                 ?.getOrNull(1)
@@ -184,7 +184,7 @@ object YuetingBa : TingShu() {
             .referrer(BASE_URL + "/")
             .ignoreContentType(true)
             .get()
-        val assl = Regex("""var\\s+assl\\s*=\\s*['"]([^'"]+)['"]""")
+        val assl = Regex("""var\s+assl\s*=\s*['"]([^'"]+)['"]""")
             .find(firstDoc.toString())
             ?.groupValues
             ?.getOrNull(1)
@@ -207,7 +207,7 @@ object YuetingBa : TingShu() {
         parseEpisodes(firstDoc, server.url, server.name, py, bookId, episodes)
 
         if (loadFullPages) {
-            val total = Regex("""共\\s*(\\d+)\\s*集""")
+            val total = Regex("""共\s*(\d+)\s*集""")
                 .find(firstDoc.text())
                 ?.groupValues
                 ?.getOrNull(1)
@@ -309,7 +309,7 @@ object YuetingBa : TingShu() {
     }
 
     private fun parseTotalPages(text: String, currentPage: Int): Int {
-        val total = Regex("""共\\s*(\\d+)\\s*条""")
+        val total = Regex("""共\s*(\d+)\s*条""")
             .find(text)
             ?.groupValues
             ?.getOrNull(1)
