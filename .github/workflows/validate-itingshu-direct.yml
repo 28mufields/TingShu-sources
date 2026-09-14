@@ -34,9 +34,14 @@ jobs:
           cookie=""
           if "<title>Loading...</title>" in html:
               import base64
-              m=re.search(r'var\\s+reversed\\s*=\\s*["\\']([^"\\']+)["\\']',html)
-              assert m
-              challenge=base64.b64decode(m.group(1)[::-1]).decode("utf-8",errors="replace")
+              marker='var reversed = "'
+              start=html.find(marker)
+              assert start >= 0
+              start += len(marker)
+              end=html.find('"',start)
+              assert end > start
+              reversed_value=html[start:end]
+              challenge=base64.b64decode(reversed_value[::-1]).decode("utf-8",errors="replace")
               tm=re.search(r"var\\s+token\\s*=\\s*'([^']+)'",challenge)
               assert tm
               token=tm.group(1)
