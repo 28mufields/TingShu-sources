@@ -3,15 +3,19 @@ package com.github.eprendre.sources_by_28mufields
 import com.github.eprendre.tingshu.extensions.config
 import com.github.eprendre.tingshu.extensions.notifyLoadingEpisodes
 import com.github.eprendre.tingshu.sources.AudioUrlExtractor
-import com.github.eprendre.tingshu.sources.AudioUrlWebViewExtractor
+import com.github.eprendre.tingshu.sources.AudioUrlCustomExtractor
+import com.github.eprendre.tingshu.sources.AudioUrlExtraHeaders
 import com.github.eprendre.tingshu.sources.CoverUrlExtraHeaders
 import com.github.eprendre.tingshu.sources.TingShu
 import com.github.eprendre.tingshu.utils.*
 import org.jsoup.Jsoup
+import org.json.JSONObject
+import java.net.URI
 import kotlin.random.Random
 
-object ITingShu : TingShu(), CoverUrlExtraHeaders {
+object ITingShu : TingShu(), AudioUrlExtraHeaders, CoverUrlExtraHeaders {
     private val pageList = ArrayList<String>()
+    private val fullChapterCache = LinkedHashMap<String, List<Episode>>()
 
     // 保留当前正在使用的爱听书 sourceId，避免历史记录/收藏关联失效。
     override fun getSourceId(): String = "3aa11119c74448efbd26cd3d16038bbc"
@@ -33,40 +37,81 @@ object ITingShu : TingShu(), CoverUrlExtraHeaders {
     }
 
     override fun getAudioUrlExtractor(): AudioUrlExtractor {
-        // 移动播放页已经能在宿主“查看源网页”中正常播放。
-        // 用 WebView 渲染同一页面，再直接读取播放器 audio 的真实 src；
-        // 若挑战页/播放器初始化尚未完成，宿主会在返回 null 后自动重试。
-        val script = """
-            (function() {
-                try {
-                    var a = document.querySelector('audio');
-                    if (a) {
-                        var u = a.currentSrc || a.src || '';
-                        if (u) return u;
-                        var s = a.querySelector('source');
-                        if (s && s.src) return s.src;
-                    }
-                    var els = document.querySelectorAll('[src]');
-                    for (var i = 0; i < els.length; i++) {
-                        var u2 = els[i].src || '';
-                        if (/\\.(m4a|mp3|aac|m4b|ogg|wav)(\\?|$)/i.test(u2)) return u2;
-                    }
-                } catch (e) {}
-                return '';
-            })();
-        """.trimIndent()
-
-        AudioUrlWebViewExtractor.setUp(false, script) { result ->
-            result
-                .trim()
-                .trim('"')
-                .replace("\\/", "/")
-                .takeIf {
-                    it.startsWith("http://") || it.startsWith("https://")
-                }
+        AudioUrlCustomExtractor.setUp { episodeUrl ->
+            resolveAudio(episodeUrl)
         }
-        return AudioUrlWebViewExtractor
+        return AudioUrlCustomExtractor
     }
+
+    private fun mobile(url: String): String {
+        val uri = URI("https://m.itingshu.net").resolve(url)
+        require(uri.scheme == "https" || uri.scheme == "http") { "非本站链接" }
+        require(uri.host == "m.itingshu.net" || uri.host == "www.itingshu.net") { "非本站链接" }
+        val query = uri.rawQuery?.let { "?" + it } ?: ""
+        return "https://m.itingshu.net" + uri.rawPath + query
+    }
+
+    private fun mobileDoc(url: String): org.jsoup.nodes.Document {
+        val normalized = mobile(url)
+        return Jsoup.parse(ITingShuHttp.request(normalized), normalized)
+    }
+
+    private fun resolveAudio(url: String): String {
+        val normalized = mobile(url)
+        ITingShuAudioCache.get(normalized)?.let { return it }
+
+        val d = mobileDoc(normalized)
+        fun meta(name: String): String {
+            val value = d.select("meta[name=" + name + "]").attr("content")
+            require(value.isNotEmpty()) { "缺少播放参数 " + name }
+            return value
+        }
+
+        val sc = meta("_c")
+        val body = ITingShuHttp.request(
+            "https://m.itingshu.net/api/mapi/play",
+            data = listOf(
+                "nid" to meta("_b"),
+                "cid" to meta("_p"),
+                "sort" to meta("_d")
+            ),
+            extra = mapOf(
+                "sc" to sc,
+                "sp" to signature(sc),
+                "Referer" to normalized,
+                "X-Requested-With" to "XMLHttpRequest",
+                "Origin" to "https://m.itingshu.net"
+            )
+        )
+
+        val json = JSONObject(body)
+        require(json.optInt("status") == 200) {
+            json.optString("msg", "音频解析失败")
+        }
+
+        val audio = json.getString("url")
+        require(URI(audio).scheme == "http" || URI(audio).scheme == "https") { "无效音频地址" }
+        ITingShuAudioCache.put(normalized, audio)
+        return audio
+    }
+
+    private fun signature(sc: String): String {
+        val table = "PXhw7U1B0a9kQDKZsTjIASmOeNzxYG4CHo1JyRfg2b8FLpEvr3FtVnlqMidu6c"
+        return buildString(sc.length * 3) {
+            for (ch in sc) {
+                val i = table.indexOf(ch)
+                append(table[Random.nextInt(62)])
+                append(if (i < 0) ch else table[(i + 3) % 62])
+                append(table[Random.nextInt(62)])
+            }
+        }
+    }
+
+    override fun headers(audioUrl: String): Map<String, String> =
+        mapOf(
+            "User-Agent" to ITingShuHttp.UA,
+            "Referer" to "https://www.itingshu.net/"
+        )
 
     override fun getCategoryMenus(): List<CategoryMenu> {
         val list1 = ArrayList<CategoryTab>()
@@ -139,49 +184,82 @@ object ITingShu : TingShu(), CoverUrlExtraHeaders {
         return Category(list, currentPage, totalPage, url, nextUrl)
     }
 
-    override fun getBookDetailInfo(bookUrl: String, loadEpisodes: Boolean, loadFullPages: Boolean): BookDetail {
-        val list = ArrayList<Episode>()
-        if (loadEpisodes) {
-            val doc = Jsoup.connect(bookUrl).config(true).get()
-            doc.getElementById("playlist")?.select("ul > li")?.forEach { li ->
-                val a = li.selectFirst("a") ?: return@forEach
-                val playUrl = a.absUrl("href")
-                    .replace("https://www.itingshu.net", "https://m.itingshu.net")
-                    .replace("http://www.itingshu.net", "https://m.itingshu.net")
-                list.add(Episode(a.text().trim(), playUrl))
-            }
+    override fun getBookDetailInfo(
+        bookUrl: String,
+        loadEpisodes: Boolean,
+        loadFullPages: Boolean
+    ): BookDetail {
+        val normalizedBook = mobile(bookUrl)
+        val d = mobileDoc(normalizedBook)
 
-            if (loadFullPages) {
-                val pages = doc.select(".hd-sel > select > option").map { it.absUrl("value") }
-                val totalPage = pages.size
-                if (pages.size > 1) {
-                    pageList.clear()
-                    pageList.addAll(pages.drop(1))
-                    var page = 1
-                    while (pageList.isNotEmpty()) {
-                        page++
-                        val nextUrl = pageList.removeAt(0)
-                        notifyLoadingEpisodes("$page / $totalPage")
-                        try {
-                            val nextDoc = Jsoup.connect(nextUrl).config(true).get()
-                            nextDoc.getElementById("playlist")?.select("ul > li")?.forEach { li ->
-                                val a = li.selectFirst("a") ?: return@forEach
-                                val playUrl = a.absUrl("href")
-                                    .replace("https://www.itingshu.net", "https://m.itingshu.net")
-                                    .replace("http://www.itingshu.net", "https://m.itingshu.net")
-                                list.add(Episode(a.text().trim(), playUrl))
-                            }
-                            Thread.sleep(Random.nextLong(100L, 300L))
-                        } catch (_: Exception) {
-                            break
-                        }
-                    }
-                    notifyLoadingEpisodes(null)
-                }
+        require(d.selectFirst("#book-detail[data-bid]") != null) {
+            "详情页结构已变化"
+        }
+
+        val author = d.select(".book-detail-info a[href^=/author/]").text()
+        val artist = d.select(".book-detail-info a[href^=/boyin/]")
+            .eachText().joinToString("，")
+        val intro = d.select(".cor-introduce").text()
+        val count = Regex("""共\s*(\d+)\s*集""")
+            .find(d.text())?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val cover = d.selectFirst("img.book-cover")?.absUrl("src").orEmpty()
+
+        if (!loadEpisodes) {
+            return BookDetail(emptyList(), intro, artist, author, count, cover)
+        }
+
+        fullChapterCache[normalizedBook]?.let { cached ->
+            if (count <= 0 || cached.size >= count) {
+                return BookDetail(cached, intro, artist, author, count, cover)
             }
         }
-        return BookDetail(list)
+
+        val catalogLink = d.select("a[href]").firstOrNull {
+            val text = it.text()
+            text.contains("查看完整目录") ||
+                text.contains("查看全部章节") ||
+                text.contains("全部章节")
+        } ?: throw IllegalStateException("未找到完整目录")
+
+        val catalogUrl = mobile(catalogLink.absUrl("href"))
+        val first = mobileDoc(catalogUrl)
+        val all = LinkedHashMap<String, Episode>()
+
+        parseEpisodes(first).forEach { all[it.url] = it }
+        require(all.isNotEmpty()) { "目录为空或结构已变化" }
+
+        val pages = first.select(".pt-dir-sel a[href]")
+            .mapNotNull {
+                val u = mobile(it.absUrl("href"))
+                val page = Regex("""[?&]page=(\d+)""")
+                    .find(u)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                if (page != null && page > 1) page to u else null
+            }
+            .distinctBy { it.first }
+            .sortedBy { it.first }
+
+        // 旧可用版会主动把完整目录的 50 集分页逐页拉完。
+        // 这里不依赖宿主第二次刷新，第一次打开书籍就加载完整章节。
+        val totalPages = pages.size + 1
+        for ((index, pair) in pages.withIndex()) {
+            notifyLoadingEpisodes(
+                (index + 2).toString() + " / " + totalPages + "（慢速加载）"
+            )
+            parseEpisodes(mobileDoc(pair.second)).forEach { all[it.url] = it }
+        }
+        notifyLoadingEpisodes(null)
+
+        val episodes = all.values.toList()
+        fullChapterCache[normalizedBook] = episodes
+        return BookDetail(episodes, intro, artist, author, count, cover)
     }
+
+    private fun parseEpisodes(d: org.jsoup.nodes.Document): List<Episode> =
+        d.select("ol.novel-text-list a[href^=/play/]")
+            .map {
+                Episode(it.text().trim(), mobile(it.absUrl("href")))
+            }
+            .distinctBy { it.url }
 
     override fun search(keywords: String, page: Int): Pair<List<Book>, Int> {
         val searchUrl = "https://www.itingshu.net/novelsearch/search/result.html"
