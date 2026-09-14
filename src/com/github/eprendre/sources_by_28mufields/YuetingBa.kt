@@ -208,7 +208,7 @@ object YuetingBa : TingShu() {
         val episodes = ArrayList<Episode>()
         parseEpisodes(firstDoc, server.url, server.name, py, bookId, episodes)
 
-        if (loadFullPages) {
+        if (loadEpisodes) {
             val total = Regex("""共\s*(\d+)\s*集""")
                 .find(firstDoc.text())
                 ?.groupValues
