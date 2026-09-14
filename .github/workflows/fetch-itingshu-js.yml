@@ -1,0 +1,43 @@
+name: Fetch ITingShu Playback JS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fetch-itingshu-js.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch current playback JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p js reports
+          UA="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+          for url in             "https://m.itingshu.net/cdn/wap/script/read.js?20260915053842"             "https://m.itingshu.net/template/360xiankan/public/js/sci.js?1789421922"             "https://m.itingshu.net/template/360xiankan/public/js/jquery.min.js"; do
+            name="$(printf "%s" "$url" | cut -d'?' -f1 | xargs basename)"
+            curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 45               -A "$UA" -e "https://m.itingshu.net/play/9808_1_100347.html" "$url" -o "js/$name"
+          done
+
+          {
+            find js -type f -printf '%p %s bytes\n'
+            for kw in "/api/mapi/play" "PXhw7U1B0a9kQDKZsTjIASmOeNzxYG4CHo1JyRfg2b8FLpEvr3FtVnlqMidu6c" "ENCRYPT_TABLE" "sp" "sc" "_b" "_p" "_c" "_d" "XMLHttpRequest"; do
+              echo "### $kw"
+              grep -Rani -m 200 -- "$kw" js 2>/dev/null || true
+            done
+          } > reports/summary.txt
+          cat reports/summary.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: itingshu-playback-js
+          path: |
+            js/
+            reports/
+          retention-days: 14
