@@ -1,0 +1,48 @@
+name: Fetch YuetingBa Bookplay Chunk
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fetch-yuetingba-bookplay.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch player chunk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p chunks reports
+          BASE="http://www.yuetingba.cn/tingpage/"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
+          for p in             "assets/pages-book-bookplay.DVPVQF4m.js"             "assets/pages-index-index.CYTn3rpN.js"; do
+            n="$(basename "$p")"
+            curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 60               -A "$UA" "$BASE$p" -o "chunks/$n"
+          done
+
+          {
+            for f in chunks/*.js; do
+              echo "===== $f ($(wc -c < "$f") bytes) ====="
+              for kw in "assl" "ting-with-efi" "creationTime" "efi" "AES" "decrypt" "CryptoJS" "parent" "ts" "es" "bookplay" "docs-listen"; do
+                echo "--- $kw ---"
+                grep -aon -m 100 -- "$kw" "$f" || true
+              done
+            done
+          } > reports/bookplay-inspection.txt
+          cat reports/bookplay-inspection.txt
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuetingba-bookplay-chunk
+          path: |
+            chunks/
+            reports/
+          retention-days: 14
