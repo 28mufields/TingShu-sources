@@ -1,0 +1,178 @@
+name: Probe YuetingBa Protocol
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/probe-yuetingba.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Probe current YuetingBa protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+
+          python3 - <<'PY' > reports/yuetingba-probe.txt
+          import base64, json, re, subprocess, sys, urllib.parse, urllib.request
+          from html import unescape
+
+          UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+          BASE = "https://www.yuetingba.cn"
+          SAMPLE = BASE + "/book/detail/3a073e9a-7a41-3eab-e915-8316e1997373/0"
+
+          def fetch(url):
+              req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": BASE + "/"})
+              with urllib.request.urlopen(req, timeout=25) as r:
+                  body = r.read().decode("utf-8", errors="replace")
+                  return r.status, r.geturl(), dict(r.headers), body
+
+          def decrypt_b64(cipher_b64, key_bytes, iv_bytes):
+              p = subprocess.run(
+                  ["openssl", "enc", "-d", "-aes-128-cbc", "-a", "-A",
+                   "-K", key_bytes.hex(), "-iv", iv_bytes.hex()],
+                  input=cipher_b64.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+              )
+              if p.returncode != 0:
+                  raise RuntimeError("openssl decrypt failed: " + p.stderr.decode(errors="replace"))
+              return p.stdout.decode("utf-8", errors="replace")
+
+          def dyn_key(e, t):
+              out = []
+              for i in range(20):
+                  out.append(chr(ord(e[i]) + int(t[i])))
+              for i in range(20, len(e)):
+                  out.append(chr(ord(e[i]) + int(t[i-20])))
+              return "".join(out)
+
+          def dyn_iv(e, t):
+              out = []
+              for i in range(20, 4, -1):
+                  out.append(chr(ord(e[i]) + int(t[i-1])))
+              return "".join(out)
+
+          print("YuetingBa protocol probe")
+          print("========================")
+
+          # 1) category
+          status, final_url, headers, html = fetch(BASE + "/book/1/1")
+          print(f"CATEGORY status={status} final={final_url} bytes={len(html)}")
+          print("CATEGORY old-list-css=" + str("section-box-list-item" in html))
+          print("CATEGORY has-next=" + str("下一页" in html))
+
+          # 2) search
+          q = urllib.parse.quote("凡人")
+          search_url = BASE + f"/search?type=1&name={q}&pageIndex=1"
+          try:
+              s_status, s_final, _, s_html = fetch(search_url)
+              print(f"SEARCH status={s_status} final={s_final} bytes={len(s_html)}")
+              print("SEARCH old-list-css=" + str("section-box-list-item" in s_html))
+              print("SEARCH has-result-keyword=" + str("凡人" in s_html))
+          except Exception as e:
+              print("SEARCH ERROR " + repr(e))
+
+          # 3) detail + assl
+          d_status, d_final, _, detail = fetch(SAMPLE)
+          print(f"DETAIL status={d_status} final={d_final} bytes={len(detail)}")
+          print("DETAIL old-playlist-css=" + str("ting-list-content" in detail))
+          m = re.search(r"var\s+assl\s*=\s*['\"]([^'\"]+)['\"]", detail)
+          if not m:
+              print("ASSL found=false")
+              sys.exit(20)
+          assl = unescape(m.group(1))
+          print("ASSL found=true length=" + str(len(assl)))
+
+          # old static AES key / IV are base64 encoded 16-byte values
+          static_key = base64.b64decode("le95G3hnFDJsBE+1/v9eYw==")
+          static_iv = base64.b64decode("IvswQFEUdKYf+d1wKpYLTg==")
+          assl_text = decrypt_b64(assl, static_key, static_iv)
+          print("ASSL decrypt=true")
+          arr = json.loads(assl_text)
+          print("ASSL json-items=" + str(len(arr)))
+          server = arr[1]
+          host = str(server.get("Value", ""))
+          port = str(server.get("Port", ""))
+          print(f"MEDIA_SERVER host={host} port={port}")
+          media_base = ("https://" if str(server.get("Ssl", "")).lower() in ("true","1") else "http://") + host + ":" + port
+
+          ids = re.findall(r'id=["\']item_([^"\']+)["\']', detail)
+          print("CHAPTER ids-found=" + str(len(ids)))
+          if not ids:
+              sys.exit(21)
+          chapter_id = ids[0]
+          print("CHAPTER sample-id-prefix=" + chapter_id[:8])
+
+          # 4) play API. Test https site first because current website is HTTPS.
+          api_candidates = [
+              BASE + f"/api/app/docs-listen/{chapter_id}/ting-with-efi",
+              "http://www.yuetingba.cn" + f"/api/app/docs-listen/{chapter_id}/ting-with-efi",
+          ]
+          payload = None
+          used_api = None
+          for api in api_candidates:
+              try:
+                  a_status, a_final, _, a_body = fetch(api)
+                  print(f"PLAY_API candidate={urllib.parse.urlparse(api).scheme} status={a_status} bytes={len(a_body)}")
+                  obj = json.loads(a_body)
+                  if all(k in obj for k in ("efi", "id", "creationTime")):
+                      payload = obj
+                      used_api = a_final
+                      break
+              except Exception as e:
+                  print(f"PLAY_API candidate={urllib.parse.urlparse(api).scheme} ERROR={type(e).__name__}:{e}")
+          if payload is None:
+              print("PLAY_API compatible=false")
+              sys.exit(22)
+
+          print("PLAY_API compatible=true scheme=" + urllib.parse.urlparse(used_api).scheme)
+          e = str(payload["id"]).replace("-", "")
+          t = str(payload["creationTime"])
+          for ch in ".-T :":
+              t = t.replace(ch, "")
+          t = t.ljust(20, "0")
+          key = dyn_key(e, t)
+          iv = dyn_iv(e, t)
+          decrypted_path = decrypt_b64(str(payload["efi"]), key.encode("utf-8"), iv.encode("utf-8"))
+          print("EFI decrypt=true path-length=" + str(len(decrypted_path)))
+          media_url = media_base + decrypted_path
+          parsed = urllib.parse.urlparse(media_url)
+          print(f"MEDIA_URL scheme={parsed.scheme} host={parsed.hostname} port={parsed.port} ext={parsed.path.rsplit('.',1)[-1] if '.' in parsed.path else ''}")
+
+          # Check reachability without printing the full media URL.
+          try:
+              req = urllib.request.Request(media_url, method="HEAD", headers={"User-Agent": UA, "Referer": BASE + "/"})
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  print(f"MEDIA_HEAD status={r.status} content-type={r.headers.get('Content-Type','')}")
+          except Exception as e:
+              print("MEDIA_HEAD ERROR " + repr(e))
+              # Some media servers reject HEAD; try a ranged GET.
+              try:
+                  req = urllib.request.Request(media_url, headers={"User-Agent": UA, "Referer": BASE + "/", "Range": "bytes=0-0"})
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      r.read(1)
+                      print(f"MEDIA_RANGE_GET status={r.status} content-type={r.headers.get('Content-Type','')}")
+              except Exception as e2:
+                  print("MEDIA_RANGE_GET ERROR " + repr(e2))
+                  sys.exit(23)
+
+          print("RESULT compatible=true")
+          PY
+
+          cat reports/yuetingba-probe.txt
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuetingba-probe
+          path: reports/
+          retention-days: 14
