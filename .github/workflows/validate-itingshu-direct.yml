@@ -1,0 +1,90 @@
+name: Validate ITingShu Direct API
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/validate-itingshu-direct.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate direct playback API
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 - <<'PY' | tee reports/itingshu-direct.txt
+          import json, random, re, urllib.parse, urllib.request
+
+          PAGE="https://m.itingshu.net/play/9808_1_100347.html"
+          API="https://m.itingshu.net/api/mapi/play"
+          UA="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          TABLE="PXhw7U1B0a9kQDKZsTjIASmOeNzxYG4CHo1JyRfg2b8FLpEvr3FtVnlqMidu6c"
+
+          req=urllib.request.Request(PAGE,headers={"User-Agent":UA,"Referer":"https://m.itingshu.net/"})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              html=r.read().decode("utf-8",errors="replace")
+              print("PAGE",r.status,"bytes",len(html))
+
+          def meta(name):
+              m=re.search(r'<meta[^>]+name=["\']'+re.escape(name)+r'["\'][^>]+content=["\']([^"\']+)["\']',html,re.I)
+              if not m:
+                  m=re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']'+re.escape(name)+r'["\']',html,re.I)
+              return m.group(1) if m else ""
+
+          nid,cid,sc,sortv=(meta("_b"),meta("_p"),meta("_c"),meta("_d"))
+          print("META",bool(nid),bool(cid),len(sc),sortv)
+          assert nid and cid and sc and sortv
+
+          def make_sp(value):
+              out=[]
+              for ch in value:
+                  idx=TABLE.find(ch)
+                  mid=ch if idx<0 else TABLE[(idx+3)%62]
+                  out.append(TABLE[random.randrange(62)])
+                  out.append(mid)
+                  out.append(TABLE[random.randrange(62)])
+              return "".join(out)
+
+          sp=make_sp(sc)
+          data=urllib.parse.urlencode({"nid":nid,"cid":cid,"sort":sortv}).encode()
+          req=urllib.request.Request(API,data=data,headers={
+              "User-Agent":UA,
+              "Referer":PAGE,
+              "Origin":"https://m.itingshu.net",
+              "X-Requested-With":"XMLHttpRequest",
+              "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
+              "sc":sc,
+              "sp":sp
+          })
+          with urllib.request.urlopen(req,timeout=30) as r:
+              body=r.read().decode("utf-8",errors="replace")
+              print("API",r.status,"body",body[:500])
+              obj=json.loads(body)
+
+          assert int(obj.get("status",0))==200
+          media=obj["url"]
+          if media.startswith("http://"):
+              media="https://"+media[len("http://"):]
+          parsed=urllib.parse.urlparse(media)
+          print("MEDIA host",parsed.hostname,"ext",parsed.path.rsplit(".",1)[-1])
+
+          req=urllib.request.Request(media,headers={"User-Agent":UA,"Referer":PAGE,"Range":"bytes=0-0"})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              b=r.read(1)
+              print("MEDIA",r.status,r.headers.get("Content-Type",""),"bytes",len(b))
+              assert r.status in (200,206)
+          print("RESULT compatible=true")
+          PY
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: itingshu-direct-validation
+          path: reports/
+          retention-days: 14
