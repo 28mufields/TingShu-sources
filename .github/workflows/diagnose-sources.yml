@@ -19,6 +19,7 @@ jobs:
           set -euo pipefail
           mkdir -p reports pages js
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+          python3 -m pip install --quiet beautifulsoup4
 
           curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 40 \
             -A "$UA" "http://www.yuetingba.cn/book/1/1" -o pages/yuetingba-category.html
