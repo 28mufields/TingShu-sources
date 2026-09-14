@@ -60,7 +60,7 @@ object ITingShu : TingShu(), CoverUrlExtraHeaders {
             result
                 .trim()
                 .trim('"')
-                .replace("\\\/", "/")
+                .replace("\\/", "/")
                 .takeIf {
                     it.startsWith("http://") || it.startsWith("https://")
                 }
