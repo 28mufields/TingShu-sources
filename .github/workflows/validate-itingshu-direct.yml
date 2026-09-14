@@ -29,7 +29,26 @@ jobs:
           req=urllib.request.Request(PAGE,headers={"User-Agent":UA,"Referer":"https://m.itingshu.net/"})
           with urllib.request.urlopen(req,timeout=30) as r:
               html=r.read().decode("utf-8",errors="replace")
-              print("PAGE",r.status,"bytes",len(html))
+              print("PAGE1",r.status,"bytes",len(html))
+
+          cookie=""
+          if "<title>Loading...</title>" in html:
+              import base64
+              m=re.search(r'var\\s+reversed\\s*=\\s*["\\']([^"\\']+)["\\']',html)
+              assert m
+              challenge=base64.b64decode(m.group(1)[::-1]).decode("utf-8",errors="replace")
+              tm=re.search(r"var\\s+token\\s*=\\s*'([^']+)'",challenge)
+              assert tm
+              token=tm.group(1)
+              cookie="__51guid__="+urllib.parse.quote(token,safe="")+"; __51refresh__guid=1"
+              req=urllib.request.Request(PAGE,headers={
+                  "User-Agent":UA,
+                  "Referer":PAGE,
+                  "Cookie":cookie
+              })
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  html=r.read().decode("utf-8",errors="replace")
+                  print("PAGE2",r.status,"bytes",len(html))
 
           def meta(name):
               m=re.search(r'<meta[^>]+name=["\']'+re.escape(name)+r'["\'][^>]+content=["\']([^"\']+)["\']',html,re.I)
@@ -60,7 +79,8 @@ jobs:
               "X-Requested-With":"XMLHttpRequest",
               "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
               "sc":sc,
-              "sp":sp
+              "sp":sp,
+              "Cookie":cookie
           })
           with urllib.request.urlopen(req,timeout=30) as r:
               body=r.read().decode("utf-8",errors="replace")
