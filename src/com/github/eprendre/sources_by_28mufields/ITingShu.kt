@@ -3,15 +3,19 @@ package com.github.eprendre.sources_by_28mufields
 import com.github.eprendre.tingshu.extensions.config
 import com.github.eprendre.tingshu.extensions.notifyLoadingEpisodes
 import com.github.eprendre.tingshu.sources.AudioUrlExtractor
-import com.github.eprendre.tingshu.sources.AudioUrlWebViewSniffExtractor
+import com.github.eprendre.tingshu.sources.AudioUrlCustomExtractor
 import com.github.eprendre.tingshu.sources.CoverUrlExtraHeaders
-import com.github.eprendre.tingshu.sources.ILogin
 import com.github.eprendre.tingshu.sources.TingShu
 import com.github.eprendre.tingshu.utils.*
+import org.jsoup.Connection
 import org.jsoup.Jsoup
+import org.json.JSONObject
+import android.util.Base64
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import kotlin.random.Random
 
-object ITingShu : TingShu(), ILogin, CoverUrlExtraHeaders {
+object ITingShu : TingShu(), CoverUrlExtraHeaders {
     private val pageList = ArrayList<String>()
 
     // 保留当前正在使用的爱听书 sourceId，避免历史记录/收藏关联失效。
@@ -23,28 +27,132 @@ object ITingShu : TingShu(), ILogin, CoverUrlExtraHeaders {
 
     override fun getDesc(): String = "推荐指数:5星 ⭐⭐⭐⭐⭐\n爱听书（搜索与播放修复版）"
 
-    override fun getLoginUrl(): String = "https://www.itingshu.net/user/public/login.html"
-
-    override fun isLoginDesktop(): Boolean = true
-
     override fun isMultipleEpisodePages(): Boolean = true
 
     override fun isSearchable(): Boolean = true
 
     override fun isDiscoverable(): Boolean = true
 
+    override fun isWebViewNotRequired(): Boolean = true
+
     override fun reset() {
         pageList.clear()
     }
 
     override fun getAudioUrlExtractor(): AudioUrlExtractor {
-        // itingshu 的移动播放页比桌面 Loading 壳页更适合宿主 WebView 嗅探。
-        AudioUrlWebViewSniffExtractor.setUp(false) { url ->
-            val u = url.lowercase()
-            (u.contains(".mp3") || u.contains(".m4a")) &&
-                (u.contains(".ysxs.") || u.contains("itingshu") || u.startsWith("http"))
+        AudioUrlCustomExtractor.setUp { episodeUrl ->
+            resolveAudioUrl(episodeUrl)
         }
-        return AudioUrlWebViewSniffExtractor
+        return AudioUrlCustomExtractor
+    }
+
+    private fun resolveAudioUrl(episodeUrl: String): String {
+        val playUrl = episodeUrl
+            .replace("https://www.itingshu.net", "https://m.itingshu.net")
+            .replace("http://www.itingshu.net", "https://m.itingshu.net")
+
+        val ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+        var response = Jsoup.connect(playUrl)
+            .userAgent(ua)
+            .referrer("https://m.itingshu.net/")
+            .ignoreContentType(true)
+            .timeout(20000)
+            .method(Connection.Method.GET)
+            .execute()
+
+        var html = response.body()
+        var cookieHeader = ""
+
+        if (html.contains("Loading...") && html.contains("reversed")) {
+            val reversed = Regex("""var\s+reversed\s*=\s*["']([^"']+)["']""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?: throw IllegalStateException("爱听书挑战页缺少 reversed")
+
+            val challengeBytes = Base64.decode(reversed.reversed(), Base64.DEFAULT)
+            val challenge = String(challengeBytes, StandardCharsets.UTF_8)
+            val token = Regex("""var\s+token\s*=\s*['"]([^'"]+)['"]""")
+                .find(challenge)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?: throw IllegalStateException("爱听书挑战页缺少 token")
+
+            val encodedToken = URLEncoder.encode(token, "UTF-8")
+            cookieHeader = "__51guid__=" + encodedToken + "; __51refresh__guid=1"
+
+            response = Jsoup.connect(playUrl)
+                .userAgent(ua)
+                .referrer(playUrl)
+                .header("Cookie", cookieHeader)
+                .ignoreContentType(true)
+                .timeout(20000)
+                .method(Connection.Method.GET)
+                .execute()
+            html = response.body()
+        }
+
+        val doc = Jsoup.parse(html, playUrl)
+        val nid = doc.selectFirst("meta[name=_b]")?.attr("content").orEmpty()
+        val cid = doc.selectFirst("meta[name=_p]")?.attr("content").orEmpty()
+        val sc = doc.selectFirst("meta[name=_c]")?.attr("content").orEmpty()
+        val sort = doc.selectFirst("meta[name=_d]")?.attr("content").orEmpty()
+
+        require(nid.isNotEmpty() && cid.isNotEmpty() && sc.isNotEmpty() && sort.isNotEmpty()) {
+            "爱听书播放页参数解析失败"
+        }
+
+        val sp = makeSp(sc)
+        val api = "https://m.itingshu.net/api/mapi/play"
+        val apiConnection = Jsoup.connect(api)
+            .userAgent(ua)
+            .referrer(playUrl)
+            .header("Origin", "https://m.itingshu.net")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("sc", sc)
+            .header("sp", sp)
+            .ignoreContentType(true)
+            .timeout(20000)
+            .data("nid", nid)
+            .data("cid", cid)
+            .data("sort", sort)
+            .method(Connection.Method.POST)
+
+        if (cookieHeader.isNotEmpty()) {
+            apiConnection.header("Cookie", cookieHeader)
+        }
+
+        val body = apiConnection.execute().body()
+        val obj = JSONObject(body)
+        require(obj.optInt("status") == 200) {
+            obj.optString("msg", "爱听书播放接口返回异常")
+        }
+
+        val audio = obj.optString("url")
+        require(audio.isNotEmpty()) { "爱听书播放接口未返回音频地址" }
+
+        return if (audio.startsWith("http://")) {
+            "https://" + audio.removePrefix("http://")
+        } else {
+            audio
+        }
+    }
+
+    private fun makeSp(sc: String): String {
+        val table = "PXhw7U1B0a9kQDKZsTjIASmOeNzxYG4CHo1JyRfg2b8FLpEvr3FtVnlqMidu6c"
+        val out = StringBuilder(sc.length * 3)
+
+        sc.forEach { ch ->
+            val index = table.indexOf(ch)
+            val middle = if (index >= 0) table[(index + 3) % 62] else ch
+            out.append(table[Random.nextInt(62)])
+            out.append(middle)
+            out.append(table[Random.nextInt(62)])
+        }
+
+        return out.toString()
     }
 
     override fun getCategoryMenus(): List<CategoryMenu> {
