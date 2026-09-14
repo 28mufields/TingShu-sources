@@ -1,0 +1,106 @@
+name: Diagnose ITingShu and YuetingBa
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/diagnose-sources.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Diagnose current site structures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports pages js
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
+          curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 40 \
+            -A "$UA" "http://www.yuetingba.cn/book/1/1" -o pages/yuetingba-category.html
+
+          python3 - <<'PY' > reports/yuetingba-structure.txt
+          from bs4 import BeautifulSoup
+          from pathlib import Path
+          html=Path("pages/yuetingba-category.html").read_text(errors="replace")
+          s=BeautifulSoup(html,"html.parser")
+          items=s.select(".section-box-list-item")
+          print("items",len(items))
+          for i,item in enumerate(items[:3]):
+              print("\nITEM",i)
+              print("classes",item.get("class"))
+              for a in item.find_all("a",href=True)[:10]:
+                  print("A",repr(a.get_text(" ",strip=True)),a.get("href"),a.get("class"))
+              for img in item.find_all("img")[:5]:
+                  print("IMG",img.get("src"),img.get("data-original"),img.get("data-src"),img.get("class"))
+              for cls in ["box-list-item-text-title","section-box-list-item-title","book-title","title","author","speaker"]:
+                  els=item.select("."+cls)
+                  if els:
+                      print("CLASS",cls,[e.get_text(" ",strip=True) for e in els[:3]])
+          PY
+
+          PLAY="https://www.itingshu.net/play/9808_1_100347.html"
+          curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 40 \
+            -A "$UA" -e "https://www.itingshu.net/" "$PLAY" -o pages/itingshu-play.html || true
+
+          python3 - <<'PY' > reports/itingshu-page.txt
+          import re
+          from pathlib import Path
+          p=Path("pages/itingshu-play.html")
+          if not p.exists():
+              print("play page missing")
+              raise SystemExit
+          html=p.read_text(errors="replace")
+          print("bytes",len(html))
+          for name in ["_b","_p","_c","_d"]:
+              m=re.search(r'(?:var\\s+)?'+re.escape(name)+r'\\s*=\\s*["\\\']([^"\\\']+)["\\\']',html)
+              print(name, m.group(1)[:160] if m else "NOT_FOUND")
+          for pat in [r"/api/mapi/play",r"ENCRYPT_TABLE",r"X-Requested-With",r"<script[^>]+src=[\"\']([^\"\']+)"]:
+              vals=re.findall(pat,html,re.I)
+              print("PAT",pat,"COUNT",len(vals),"SAMPLES",vals[:20])
+          srcs=re.findall(r'<script[^>]+src=["\\\']([^"\\\']+)',html,re.I)
+          Path("reports/itingshu-scripts.txt").write_text("\n".join(srcs))
+          PY
+
+          while IFS= read -r src; do
+            [ -n "$src" ] || continue
+            case "$src" in
+              http://*|https://*) url="$src" ;;
+              //*) url="https:$src" ;;
+              /*) url="https://www.itingshu.net$src" ;;
+              *) url="https://www.itingshu.net/play/$src" ;;
+            esac
+            clean="$(printf "%s" "$src" | cut -d "?" -f 1)"
+            name="$(basename "$clean")"
+            [ -n "$name" ] || continue
+            curl -4 --http1.1 -L --fail --retry 2 --connect-timeout 10 --max-time 40 \
+              -A "$UA" -e "$PLAY" "$url" -o "js/$name" || true
+          done < reports/itingshu-scripts.txt
+
+          {
+            cat reports/itingshu-page.txt
+            echo
+            echo "=== JS matches ==="
+            for kw in "/api/mapi/play" "ENCRYPT_TABLE" "X-Requested-With" "_b" "_p" "_c" "_d" "sc" "sp"; do
+              echo "### $kw"
+              grep -Rani -m 50 -- "$kw" js 2>/dev/null || true
+            done
+          } > reports/itingshu-inspection.txt
+
+          cat reports/yuetingba-structure.txt
+          cat reports/itingshu-inspection.txt
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-diagnostics
+          path: |
+            reports/
+            pages/
+            js/
+          retention-days: 14
