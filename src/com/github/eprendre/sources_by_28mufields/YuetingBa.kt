@@ -38,6 +38,8 @@ object YuetingBa : TingShu() {
 
     override fun isWebViewNotRequired(): Boolean = true
 
+    override fun isMultipleEpisodePages(): Boolean = true
+
     override fun search(keywords: String, page: Int): Pair<List<Book>, Int> {
         val encoded = URLEncoder.encode(keywords, "UTF-8")
         val url = "$BASE_URL/search?type=1&name=$encoded&pageIndex=$page"
