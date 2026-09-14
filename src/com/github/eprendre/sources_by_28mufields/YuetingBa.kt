@@ -52,7 +52,7 @@ object YuetingBa : TingShu() {
 
     override fun getAudioUrlExtractor(): AudioUrlExtractor {
         AudioUrlCustomExtractor.setUp { episodeValue ->
-            val parts = episodeValue.split("|", limit = 5)
+            val parts = episodeValue.split(",", limit = 5)
             require(parts.size == 5) { "悦听吧章节参数格式错误" }
 
             val serverUrl = parts[0]
@@ -132,22 +132,41 @@ object YuetingBa : TingShu() {
             .get()
         val books = parseBookList(doc)
 
-        val currentPage = doc.selectFirst(".pagelist .current")?.text()?.toIntOrNull()
-            ?: Regex("/(\\d+)$").find(url)?.groupValues?.get(1)?.toIntOrNull()
-            ?: 1
+        var currentPage = Regex("/(\\d+)$").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        var totalPage = 1
+        var nextUrl = ""
 
-        val totalPage = parseTotalPages(doc.text(), currentPage)
+        val pageContainer = doc.selectFirst(".pagelist > div")
+        if (pageContainer != null) {
+            currentPage = pageContainer.selectFirst(".current")?.text()?.toIntOrNull() ?: currentPage
 
-        val nextHref = doc.select(".pagelist a, a").firstOrNull {
-            it.text().trim() == "下一页" || it.text().contains("下页")
-        }?.attr("abs:href").orEmpty()
+            val spans = pageContainer.select("span")
+            val countText = spans.firstOrNull { it.text().contains("共") && it.text().contains("条") }?.text()
+                ?: spans.getOrNull(1)?.text().orEmpty()
+            val total = Regex("""共\\s*(\\d+)\\s*条""")
+                .find(countText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+            if (total != null) {
+                totalPage = maxOf(1, ceil(total / 10.0).toInt())
+            }
 
-        val nextUrl = if (nextHref.isNotEmpty()) {
-            nextHref
-        } else if (currentPage < totalPage) {
-            url.replace(Regex("/\\d+$"), "/" + (currentPage + 1))
-        } else {
-            ""
+            val nextHref = pageContainer.select("a").firstOrNull {
+                it.text().trim() == "下一页" || it.text().contains("下页")
+            }?.attr("href").orEmpty()
+
+            if (nextHref.isNotEmpty()) {
+                nextUrl = when {
+                    nextHref.startsWith("http://") || nextHref.startsWith("https://") -> nextHref
+                    nextHref.startsWith("/") -> BASE_URL + nextHref
+                    else -> BASE_URL + "/" + nextHref
+                }
+            }
+        }
+
+        if (totalPage == 1 && nextUrl.isNotEmpty()) {
+            totalPage = currentPage + 1
         }
 
         return Category(books, currentPage, totalPage, url, nextUrl)
@@ -282,7 +301,7 @@ object YuetingBa : TingShu() {
                 ?.takeIf { it.isNotEmpty() }
                 ?: element.text().trim()
 
-            val episodeValue = serverUrl + "|" + serverName + "|" + py + "|" + bookId + "|" + id
+            val episodeValue = serverUrl + "," + serverName + "," + py + "," + bookId + "," + id
             if (title.isNotEmpty() && out.none { it.url == episodeValue }) {
                 out.add(Episode(title, episodeValue))
             }
