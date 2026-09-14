@@ -1,0 +1,77 @@
+name: Inspect YuetingBa Player JS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/inspect-yuetingba-js.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download player frontend and locate crypto code
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inspect/js reports
+          BASE="http://www.yuetingba.cn"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+
+          curl -4 --http1.1 -L --fail --retry 3 --connect-timeout 10 --max-time 40 \
+            -A "$UA" "$BASE/tingpage/index.html?v=1.8.5" -o inspect/index.html
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s=Path("inspect/index.html").read_text(errors="replace")
+          srcs=re.findall(r'<script[^>]+src=["\']([^"\']+)', s, re.I)
+          Path("reports/script-srcs.txt").write_text("\n".join(srcs))
+          print("\n".join(srcs))
+          PY
+
+          while IFS= read -r src; do
+            [ -n "$src" ] || continue
+            case "$src" in
+              http://*|https://*) url="$src" ;;
+              /*) url="$BASE$src" ;;
+              *) url="$BASE/tingpage/$src" ;;
+            esac
+            name="$(echo "$src" | sed 's/[?#].*$//' | sed 's#^.*/##')"
+            [ -n "$name" ] || name="bundle.js"
+            echo "GET $url -> $name"
+            curl -4 --http1.1 -L --fail --retry 2 --connect-timeout 10 --max-time 40 \
+              -A "$UA" "$url" -o "inspect/js/$name" || true
+          done < reports/script-srcs.txt
+
+          {
+            echo "# YuetingBa player JS crypto inspection"
+            echo
+            echo "## downloaded files"
+            find inspect -type f -printf '%p %s bytes\n' | sort
+            echo
+            echo "## keyword matches"
+            for kw in "assl" "ting-with-efi" "creationTime" "efi" "AES" "decrypt" "CryptoJS" "ts" "es"; do
+              echo
+              echo "### $kw"
+              grep -Rni -m 30 -- "$kw" inspect/js inspect/index.html 2>/dev/null || true
+            done
+          } > reports/player-js-inspection.txt
+
+          cat reports/player-js-inspection.txt
+
+      - name: Upload inspection artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuetingba-player-js
+          path: |
+            inspect/
+            reports/
+          retention-days: 14
