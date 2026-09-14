@@ -52,7 +52,7 @@ jobs:
             grep -q "下一页" pages/category.html               && echo "CATEGORY has-next=true" | tee -a "$REPORT"               || echo "CATEGORY has-next=false" | tee -a "$REPORT"
           fi
 
-          SEARCH_URL="https://www.yuetingba.cn/search?type=1&name=%E5%87%A1%E4%BA%BA&pageIndex=1"
+          SEARCH_URL="http://www.yuetingba.cn/search?type=1&name=%E5%87%A1%E4%BA%BA&pageIndex=1"
           fetch "$SEARCH_URL" pages/search.html || true
           if [ -s pages/search.html ]; then
             grep -q "section-box-list-item" pages/search.html               && echo "SEARCH old-list-css=true" | tee -a "$REPORT"               || echo "SEARCH old-list-css=false" | tee -a "$REPORT"
@@ -61,7 +61,7 @@ jobs:
             echo "SEARCH fetch_failed=true" | tee -a "$REPORT"
           fi
 
-          SAMPLE="https://www.yuetingba.cn/book/detail/3a073e9a-7a41-3eab-e915-8316e1997373/0"
+          SAMPLE="http://www.yuetingba.cn/book/detail/3a073e9a-7a41-3eab-e915-8316e1997373/0"
           fetch "$SAMPLE" pages/detail.html || true
 
           python3 - <<'PY' | tee -a "$REPORT"
@@ -121,7 +121,7 @@ jobs:
 
           if [ -s pages/chapter-id.txt ]; then
             CHAPTER_ID="$(cat pages/chapter-id.txt)"
-            API_HTTPS="https://www.yuetingba.cn/api/app/docs-listen/$CHAPTER_ID/ting-with-efi"
+            API_HTTPS="http://www.yuetingba.cn/api/app/docs-listen/$CHAPTER_ID/ting-with-efi"
             API_HTTP="http://www.yuetingba.cn/api/app/docs-listen/$CHAPTER_ID/ting-with-efi"
             fetch "$API_HTTPS" pages/play-api.json || true
             if [ ! -s pages/play-api.json ]; then
