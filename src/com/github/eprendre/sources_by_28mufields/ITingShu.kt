@@ -38,12 +38,11 @@ object ITingShu : TingShu(), ILogin, CoverUrlExtraHeaders {
     }
 
     override fun getAudioUrlExtractor(): AudioUrlExtractor {
-        AudioUrlWebViewSniffExtractor.setUp(true) { url ->
+        // itingshu 的移动播放页比桌面 Loading 壳页更适合宿主 WebView 嗅探。
+        AudioUrlWebViewSniffExtractor.setUp(false) { url ->
             val u = url.lowercase()
-            u.contains(".m4a") || u.contains(".mp3") || u.contains(".m4b") ||
-                u.contains(".flac") || u.contains(".aa3") || u.contains(".ogg") ||
-                u.contains(".wma") || u.contains(".wav") || u.contains(".aac") ||
-                u.contains(".ac3") || u.contains(".mp4")
+            (u.contains(".mp3") || u.contains(".m4a")) &&
+                (u.contains(".ysxs.") || u.contains("itingshu") || u.startsWith("http"))
         }
         return AudioUrlWebViewSniffExtractor
     }
@@ -125,7 +124,10 @@ object ITingShu : TingShu(), ILogin, CoverUrlExtraHeaders {
             val doc = Jsoup.connect(bookUrl).config(true).get()
             doc.getElementById("playlist")?.select("ul > li")?.forEach { li ->
                 val a = li.selectFirst("a") ?: return@forEach
-                list.add(Episode(a.text().trim(), a.absUrl("href")))
+                val playUrl = a.absUrl("href")
+                    .replace("https://www.itingshu.net", "https://m.itingshu.net")
+                    .replace("http://www.itingshu.net", "https://m.itingshu.net")
+                list.add(Episode(a.text().trim(), playUrl))
             }
 
             if (loadFullPages) {
@@ -143,7 +145,10 @@ object ITingShu : TingShu(), ILogin, CoverUrlExtraHeaders {
                             val nextDoc = Jsoup.connect(nextUrl).config(true).get()
                             nextDoc.getElementById("playlist")?.select("ul > li")?.forEach { li ->
                                 val a = li.selectFirst("a") ?: return@forEach
-                                list.add(Episode(a.text().trim(), a.absUrl("href")))
+                                val playUrl = a.absUrl("href")
+                                    .replace("https://www.itingshu.net", "https://m.itingshu.net")
+                                    .replace("http://www.itingshu.net", "https://m.itingshu.net")
+                                list.add(Episode(a.text().trim(), playUrl))
                             }
                             Thread.sleep(Random.nextLong(100L, 300L))
                         } catch (_: Exception) {
