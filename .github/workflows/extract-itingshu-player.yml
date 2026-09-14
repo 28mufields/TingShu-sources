@@ -1,0 +1,78 @@
+name: Extract ITingShu Player Script
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/extract-itingshu-player.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare Chromium
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.55.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium
+
+      - name: Extract full player DOM and scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports scripts
+          cat > extract.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            const context=await browser.newContext({
+              userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+              viewport:{width:390,height:844},
+              locale:'zh-CN'
+            });
+            const page=await context.newPage();
+            await page.goto('https://m.itingshu.net/play/9808_1_100347.html',{waitUntil:'networkidle',timeout:60000}).catch(()=>{});
+            await page.waitForTimeout(4000);
+            fs.writeFileSync('reports/full.html', await page.content());
+            const scripts=await page.locator('script').evaluateAll(els=>els.map((e,i)=>({
+              i,src:e.src||'',text:e.src?'':(e.textContent||'')
+            })));
+            fs.writeFileSync('reports/scripts.json',JSON.stringify(scripts,null,2));
+            for(const s of scripts){
+              if(s.text) fs.writeFileSync('scripts/inline-'+s.i+'.js',s.text);
+            }
+            const meta=await page.locator('meta').evaluateAll(els=>Object.fromEntries(
+              els.filter(e=>e.name&&e.name.startsWith('_')).map(e=>[e.name,e.content])
+            ));
+            fs.writeFileSync('reports/meta.json',JSON.stringify(meta,null,2));
+            await browser.close();
+          })();
+          JS
+          node extract.js
+
+          {
+            echo "=== meta ==="
+            cat reports/meta.json
+            echo
+            echo "=== matches ==="
+            for kw in "/api/mapi/play" "PXhw7U1B0a9kQDKZsTjIASmOeNzxYG4CHo1JyRfg2b8FLpEvr3FtVnlqMidu6c" "ENCRYPT_TABLE" "sp" "_c" "_b" "_p" "_d" "XMLHttpRequest"; do
+              echo "### $kw"
+              grep -Rani -m 100 -- "$kw" scripts reports/full.html 2>/dev/null || true
+            done
+          } > reports/summary.txt
+          cat reports/summary.txt
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: itingshu-player-script
+          path: |
+            reports/
+            scripts/
+          retention-days: 14
