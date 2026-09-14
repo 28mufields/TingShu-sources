@@ -37,8 +37,9 @@ jobs:
                   return r.status,r.headers,r.read()
 
           def dec_b64(value,key_bytes,iv_bytes):
+              cipher = "-aes-256-cbc" if len(key_bytes) == 32 else "-aes-128-cbc"
               p=subprocess.run(
-                  ["openssl","enc","-d","-aes-128-cbc","-a","-A",
+                  ["openssl","enc","-d",cipher,"-a","-A",
                    "-K",key_bytes.hex(),"-iv",iv_bytes.hex()],
                   input=value.encode(),stdout=subprocess.PIPE,stderr=subprocess.PIPE
               )
