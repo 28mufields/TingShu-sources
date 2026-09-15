@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'src/**'
+      - 'tests/**'
       - '.github/workflows/build.yml'
 
 permissions:
@@ -48,6 +49,14 @@ jobs:
           cd upstream/CustomSources
           ./gradlew jar --no-daemon
 
+      - name: Verify historical ITingShu behavior
+        run: |
+          set -euxo pipefail
+          mkdir -p upstream/CustomSources/src/test/kotlin/itingshu-regression
+          cp source-repo/tests/*.kt upstream/CustomSources/src/test/kotlin/itingshu-regression/
+          cd upstream/CustomSources
+          ./gradlew test --tests 'com.github.eprendre.sources_by_28mufields.ITingShuRegressionTest' --no-daemon
+
       - name: Verify output
         run: |
           set -euxo pipefail
@@ -55,6 +64,20 @@ jobs:
           test -f "$JAR"
           unzip -l "$JAR" | tee jar-contents.txt
           unzip -l "$JAR" | grep -q 'classes.dex'
+          python3 - "$JAR" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as jar:
+              assert jar.namelist() == ['classes.dex'], jar.namelist()
+              dex = jar.read('classes.dex')
+          assert dex.startswith(b'dex\n')
+          for name in ['SourceEntry', 'ITingShu', 'YuetingBa', 'SiteClient', 'SiteSession', 'ChapterStore']:
+              assert ('Lcom/github/eprendre/sources_by_28mufields/' + name + ';').encode() in dex, name
+          for forbidden in [b'ITingShuRegression', b'Lcom/github/eprendre/sources_by_itingshu/']:
+              assert forbidden not in dex, forbidden
+          with zipfile.ZipFile('upstream/CustomSources/build/libs/CustomSources-1.0-SNAPSHOT.jar') as jvm:
+              assert all(n.startswith('com/github/eprendre/sources_by_28mufields/') or n.endswith('/') or n.startswith('META-INF/') for n in jvm.namelist())
+          print('Verified single DEX, both sources, restored helpers, no test/host classes')
+          PY
           sha256sum "$JAR" | tee jar-sha256.txt
           cp "$JAR" source-repo/sources_by_28mufields.jar
 
@@ -66,4 +89,5 @@ jobs:
             source-repo/sources_by_28mufields.jar
             jar-contents.txt
             jar-sha256.txt
+            upstream/CustomSources/build/test-results/test/TEST-com.github.eprendre.sources_by_28mufields.ITingShuRegressionTest.xml
           retention-days: 30
