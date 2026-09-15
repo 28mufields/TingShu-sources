@@ -1,5 +1,9 @@
 # Historical ITingShu r5 restoration
 
+## D1 diagnostic display follow-up
+
+The user confirmed Android truncates the multiline status toast before the useful HTTP/cooldown fields. D1 presents the latest result, remaining cooldown, request count and complete path/error split into short parts as separate menu buttons and short toasts. Menu labels provide a readable snapshot when source settings are reopened. No Cookie values or response bodies are displayed. Request, playback, catalog, Cookie and rate-limit behavior is unchanged from the restored r5; this is a diagnostic build, not a claimed fix for the unconfirmed device playback failure. The historical parity statements below describe the preceding restoration commit.
+
 ## Evidence
 
 - Historical repository JAR: `sources_by_itingshu.jar`, SHA-256 `bb45f9a987ef18e8a985823fb5f63767a70180ac4174814ff35ec3f423b71ebe`.

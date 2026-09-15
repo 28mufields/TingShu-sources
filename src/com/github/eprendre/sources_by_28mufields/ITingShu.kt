@@ -30,11 +30,18 @@ object ITingShu : TingShu(), AudioUrlExtraHeaders, ConfigurableSource {
     override fun getSourceId() = "3aa11119c74448efbd26cd3d16038bbc"
     override fun getUrl() = BASE
     override fun getName() = "爱听书"
-    override fun getDesc() = "r5：支持 APP 预缓存；共享网页登录 Cookie；慢速目录。\n" + SiteHttp.status()
-    override fun getCustomConfigItems(): List<ConfigItem> = listOf(
-        ConfigItem.Button("查看源状态（最近错误/等待时间）") { showToast(SiteHttp.status()) },
-        ConfigItem.Button("网页登录说明") { showToast("请在本 APP 播放菜单的“查看源网页”中登录 m.itingshu.net，再返回重试。外部浏览器登录不共享；检测到 Cookie 不等于已登录。") }
-    )
+    override fun getDesc() = "r5-D1：诊断分项显示；播放与限流逻辑不变。\n" + SiteHttp.status()
+    override fun getCustomConfigItems(): List<ConfigItem> = buildList {
+        add(ConfigItem.Button("查看源状态（诊断版D1）") { showToast("请查看下方诊断1、2、3") })
+        // Both the menu label and the toast contain only one short item.
+        // Reopen source settings after a failure to refresh the menu snapshot.
+        SiteHttp.diagnosticLines().forEachIndexed { index, line ->
+            add(ConfigItem.Button("诊断${index + 1}：$line") {
+                showToast(SiteHttp.diagnosticLines().getOrNull(index) ?: "请重新打开源设置")
+            })
+        }
+        add(ConfigItem.Button("网页登录说明") { showToast("请在APP内的源网页登录") })
+    }
     override fun isWebViewNotRequired() = true
     override fun isMultipleEpisodePages() = true
     override fun isCacheable() = true // Allow the host to cache audio; each extraction still resolves a fresh URL.
@@ -212,6 +219,20 @@ internal open class SiteClient(
     private var lastRequestAt = 0L
     @Volatile private var lastEvent = "尚未请求"
     @Volatile private var requestsSent = 0
+    internal fun diagnosticLines(): List<String> {
+        val event = lastEvent
+        val remaining = ((blockedUntil - clock() + 999L) / 1000L).coerceAtLeast(0L)
+        val lines = mutableListOf(
+            event.substringBefore('：').take(18),
+            "等待${remaining}秒",
+            "已发${requestsSent}次请求"
+        )
+        // Paths and exception class names can be longer than Android's toast limit.
+        // Keep every part, without exposing Cookie values or server response bodies.
+        val details = event.substringAfter('：', "")
+        details.chunked(14).forEachIndexed { index, part -> lines.add("详情${index + 1}:$part") }
+        return lines
+    }
     fun status(): String {
         val remaining = ((blockedUntil - clock() + 999L) / 1000L).coerceAtLeast(0L)
         val cookies = if (session.shared) runCatching {

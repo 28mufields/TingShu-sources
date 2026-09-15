@@ -51,6 +51,11 @@ fun main() {
     }, clock = { now }, sleeper = { now += it })
     val page = limited.request("$base/book/")
     check(runCatching { limited.request(url) }.exceptionOrNull()?.message?.contains("3600") == true)
+    val diagnostics = limited.diagnosticLines()
+    check(diagnostics.take(3) == listOf("HTTP 429", "等待3600秒", "已发2次请求"))
+    check(diagnostics.all { it.length <= 20 })
+    check(diagnostics.drop(3).joinToString("") { it.substringAfter(':') } == "/play/123_1_1.html")
+    check(diagnostics.none { it.contains("Cookie") || it.contains("auth=") })
     now += 1200000L
     check(limited.request("$base/book/") == page && calls == 2)
     check(runCatching { limited.request("$base/api/mapi/play") }.isFailure && calls == 2)
